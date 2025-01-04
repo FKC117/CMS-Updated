@@ -1,0 +1,92 @@
+{% load crispy_forms_tags %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abstract Submission</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .word-count-container {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem; /* Adjusted gap for closer spacing */
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            text-align: center;
+        }
+        .word-count {
+            color: #555;
+        }
+        .word-count-error {
+            color: red;
+        }
+        .separator {
+            margin: 0 0.25rem; /* Adjusted margin for closer vertical lines */
+        }
+    </style>
+</head>
+<body>
+    <div class="mt-10container w-full max-w-4xl mx-auto sm:px-6 lg:px-8">
+        <h2 class="text-center mt-10 mb-8 font-bold text-2xl">Abstract Submission</h2>
+        <form id="abstract-form" action="{% url 'abstract_submission' %}" method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            {% crispy form %}
+            <div class="word-count-container">
+                <div id="methods-word-count" class="word-count">Methods word count: 0</div>
+                <div class="separator">|</div>
+                <div id="results-word-count" class="word-count">Results word count: 0</div>
+                <div class="separator">|</div>
+                <div id="total-word-count" class="word-count">Total word count: 0</div>
+            </div>
+        </form>
+        <br/> <br/>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const methodsField = document.getElementById('id_methods');
+            const resultsField = document.getElementById('id_results');
+            const methodsWordCount = document.getElementById('methods-word-count');
+            const resultsWordCount = document.getElementById('results-word-count');
+            const totalWordCount = document.getElementById('total-word-count');
+            const form = document.getElementById('abstract-form');
+
+            const updateWordCount = () => {
+                const methodsWords = methodsField.value.split(/\s+/).filter(word => word.length > 0).length;
+                const resultsWords = resultsField.value.split(/\s+/).filter(word => word.length > 0).length;
+                const totalWords = methodsWords + resultsWords;
+
+                methodsWordCount.textContent = `Methods word count: ${methodsWords}`;
+                resultsWordCount.textContent = `Results word count: ${resultsWords}`;
+                totalWordCount.textContent = `Total word count: ${totalWords}`;
+
+                if (totalWords > 400) {
+                    totalWordCount.classList.add('word-count-error');
+                    totalWordCount.textContent += ' (exceeds limit)';
+                    form.querySelector('button[type="submit"]').disabled = true;
+                } else {
+                    totalWordCount.classList.remove('word-count-error');
+                    form.querySelector('button[type="submit"]').disabled = false;
+                }
+            };
+
+            methodsField.addEventListener('input', updateWordCount);
+            resultsField.addEventListener('input', updateWordCount);
+
+            form.addEventListener('submit', function (e) {
+                const methodsWords = methodsField.value.split(/\s+/).filter(word => word.length > 0).length;
+                const resultsWords = resultsField.value.split(/\s+/).filter(word => word.length > 0).length;
+                const totalWords = methodsWords + resultsWords;
+
+                if (totalWords > 400) {
+                    e.preventDefault();
+                    alert('The total word count for Methods and Results should not exceed 400 words.');
+                }
+            });
+
+            updateWordCount();  // Initial call to set word counts on page load
+        });
+    </script>
+</body>
+</html>
