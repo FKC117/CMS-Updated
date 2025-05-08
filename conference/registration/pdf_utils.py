@@ -4,69 +4,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, TableStyle, Table
 from io import BytesIO
-
-
-# def generate_abstract_pdf(abstracts):
-#     buffer = BytesIO()
-#     doc = SimpleDocTemplate(buffer, pagesize=letter)
-#     styles = getSampleStyleSheet()
-
-#     # Create a justified paragraph style
-#     justified_style = ParagraphStyle(name='Justified', parent=styles['Normal'], alignment=4)  # Justify text
-
-#     elements = []
-
-#     # Define the Header
-#     header = Paragraph("Abstracts of BBCC 2025", styles['Title'])
-#     elements.append(header)
-#     elements.append(Spacer(1, 24))
-
-#     for abstract in abstracts:
-#         elements.append(Paragraph(f"<b>ID:</b> {abstract.id}", justified_style))
-#         elements.append(Spacer(1, 12))
-#         elements.append(Paragraph(f"<b>Title:</b> {abstract.title}", justified_style))
-#         elements.append(Spacer(1, 12))
-#         elements.append(Paragraph(f"<b>Authors:</b> {abstract.authors}", justified_style))
-#         elements.append(Spacer(1, 12))
-#         elements.append(Paragraph(f"<b>Institution:</b> {abstract.institution}", justified_style))
-#         elements.append(Spacer(1, 12))
-
-#         # Combine heading and text in a single justified paragraph
-#         elements.append(Paragraph("<b>Introduction:</b> " + abstract.introduction.replace('\n', '<br />'), justified_style))
-#         elements.append(Spacer(1, 12))
-#         elements.append(Paragraph("<b>Methods:</b> " + abstract.methods.replace('\n', '<br />'), justified_style))
-#         elements.append(Spacer(1, 12))
-#         elements.append(Paragraph("<b>Results:</b> " + abstract.results.replace('\n', '<br />'), justified_style))
-#         elements.append(Spacer(1, 12))
-#         elements.append(Paragraph("<b>Conclusion:</b> " + abstract.conclusion.replace('\n', '<br />'), justified_style))
-#         elements.append(Spacer(1, 12))
-
-#         # Add image if available and resize it
-#         if abstract.image:
-#             img = Image(abstract.image.path)
-#             img._restrictSize(5*inch, 5*inch)  # Resize image to fit within 5x5 inches
-#             elements.append(img)
-#             elements.append(Spacer(1, 12))
-
-#         # Add approval status
-#         if abstract.approved_for_presentation:
-#             elements.append(Paragraph("<b>Status:</b> Approved for Presentation", justified_style))
-#         elif abstract.approved_for_poster:
-#             elements.append(Paragraph("<b>Status:</b> Approved for Poster", justified_style))
-#         else:
-#             elements.append(Paragraph("<b>Status:</b> Not Approved", justified_style))
-
-#         elements.append(Spacer(1, 24))
-
-#     doc.build(elements)
-#     buffer.seek(0)
-#     return buffer
-
-
-# Program Schedule in pdf generator start ----------------------------------------------------------------#
-
-
-
+import os
 from reportlab.lib.pagesizes import landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle

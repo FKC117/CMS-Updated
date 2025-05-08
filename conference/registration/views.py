@@ -310,7 +310,7 @@ def send_registration_form_submission_email(participant):
     # Render the email template with context
     html_content = render_to_string('registration_submitted.html', {'participant': participant})
     text_content = strip_tags(html_content)
-    from_email = 'info.bsbcs@gmail.com'  # Replace with your sender email
+    from_email = os.getenv("EMAIL_HOST_USER")
     recipient_list = [participant.email]
 
     # Create the email
@@ -332,7 +332,7 @@ def send_approval_email(participant, event):
     try:
         html_content = render_to_string('registration_badge_download.html', {'participant': participant, 'event': event})
         text_content = strip_tags(html_content)
-        from_email = 'no-reply@example.com'
+        from_email = os.getenv("EMAIL_HOST_USER")
         recipient_list = [participant.email]
 
         email = EmailMultiAlternatives(subject, text_content, from_email, recipient_list)
@@ -348,13 +348,16 @@ from django.utils.html import strip_tags
 
 def send_payment_link_email(participant, event):
     subject = f'Complete Your Payment for {event.name} {event.year} Conference'
-    base_url = 'http://127.0.0.1:8000'  # Ensure the correct protocol and base address
-    payment_url = f'{base_url}/payment?event_id={event.id}&participant_id={participant.id}'  # Correctly formatted URL
+    payment_url = reverse('payment', kwargs={
+        'event_id': event.id,
+        'participant_id': participant.id
+    })
+    full_payment_url = f'https://event.bsbcs.org{payment_url}'
 
     try:
-        html_content = render_to_string('payment_link.html', {'participant': participant, 'event': event, 'payment_url': payment_url})
+        html_content = render_to_string('payment_link.html', {'participant': participant, 'event': event, 'payment_url': full_payment_url})
         text_content = strip_tags(html_content)
-        from_email = 'no-reply@example.com'
+        from_email = os.getenv("EMAIL_HOST_USER")
         recipient_list = [participant.email]
 
         email = EmailMultiAlternatives(subject, text_content, from_email, recipient_list)
@@ -482,13 +485,12 @@ def submission_success(request, event_id):
     return render(request, 'submission_success.html', {'event': event})
 
 
-
 def send_abstract_submission_email(participant):
     subject = 'Abstract Submission Confirmation'
     # Render the email template with context
     html_content = render_to_string('submission_success.html', {'participant': participant})
     text_content = strip_tags(html_content)
-    from_email = 'info.bsbcs@gmail.com'  # Replace with your sender email
+    from_email = os.getenv("EMAIL_HOST_USER")  # Replace with your sender email
     recipient_list = [participant.email]
 
     # Create the email
@@ -597,11 +599,18 @@ def render_error_page(request, error_message):
 
 # Step 1: Grant Token
 
+from django.core.cache import cache
+
 def get_bkash_token():
+    cached_token = cache.get('bkash_token')  # Check if token exists in cache
+    if cached_token:
+        print("Using cached token...")
+        return cached_token
+
     url = f"{BKASH_PRODUCTION_URL}/tokenized/checkout/token/grant"
     headers = {
         "username": BKASH_USERNAME,
-        "password": "8=*gF8h]ziM",
+        "password": "8=*gF8h]ziM",  # Use the environment variable for password
         "Content-Type": "application/json"
     }
     payload = {
@@ -610,12 +619,18 @@ def get_bkash_token():
     }
 
     try:
-        print("Requesting token...")
-        response = requests.post(url, json=payload, headers=headers)
+        print("Requesting new token...")
+        response = requests.post(url, json=payload, headers=headers, timeout=30) # 30 sec timeout
         response.raise_for_status()
         token = response.json().get("id_token")
-        print("Token retrieved successfully:", token)
+
+        # Cache the token for 59 minutes (less than its actual expiry time of 60 minutes)
+        cache.set('bkash_token', token, timeout=59 * 60)
+        print("Token retrieved and cached successfully:", token)
         return token
+    except requests.exceptions.Timeout:
+        print("Token Request timed out.")
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Failed to get token: {e}")
         return None
@@ -640,9 +655,13 @@ def create_bkash_payment(token, amount, payer_reference, callback_url, merchant_
 
     try:
         print("Creating payment...")
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=30) # 30 sec timeout
         response.raise_for_status()  # Raises an exception for HTTP errors (4xx, 5xx)
         return response.json()
+
+    except requests.exceptions.Timeout:
+        print("Payment creation timed out.")
+        return {"statusCode": "408", "statusMessage": "Payment creation request timed out."}
 
     except requests.exceptions.RequestException as e:
         print(f"Error in creating payment: {e}")
@@ -660,23 +679,62 @@ def execute_payment(token, payment_id):
     }
     try:
         print(f"Executing payment for Payment ID: {payment_id}")
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=30) # 30 sec timeout
         response.raise_for_status()
         return response.json()
+        
+    except requests.exceptions.Timeout:
+        print("Payment execution timed out.")
+        return {"statusCode": "408", "statusMessage": "Payment execution request timed out."}
     
     except requests.exceptions.RequestException as e:
         print(f"Error in payment execution: {e}")
         if e.response:
             print(f"Error in executing payment: {e}")
         return None
-    
 
-# Step 4: Payment View
+# Step 4: Query Payment  
+import requests
+
+def payment_query(token, payment_id):
+
+    url = f"{BKASH_PRODUCTION_URL}/tokenized/checkout/payment/status"
+    payload = {"paymentID": payment_id}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "X-APP-Key": BKASH_APP_KEY  # Ensure APP Key is properly set
+    }
+
+    try:
+        print(f"Querying payment status for Payment ID: {payment_id}")
+        response = requests.post(url, json=payload, headers=headers, timeout=30) # 30 sec timeout
+        response.raise_for_status()  # Raise an error for HTTP codes >= 400
+        
+        # Debugging response
+        print(f"Payment query successful: {response.status_code}")
+        print(f"Response content: {response.json()}")
+        return response.json()
+        
+    except requests.exceptions.Timeout:
+        print(f"Payment query timed out for Payment ID: {payment_id}")
+    
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred: {http_err}")
+        if http_err.response:
+            print(f"HTTP response error: {http_err.response.json()}")
+        return None
+    except requests.exceptions.RequestException as req_err:
+        print(f"Request error occurred: {req_err}")
+        return None
+
+# Step 5: Payment View
 from django.urls import reverse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse_lazy
 from django.contrib import messages
-from .models import Participant, Event, PaymentStatus  # Replace with your actual models
+from .models import Participant, Event, PaymentStatus
+
 
 @login_required
 def payment(request, event_id, participant_id):
@@ -720,7 +778,7 @@ def payment(request, event_id, participant_id):
 
     return render(request, 'payment.html', {'participant': participant, 'event': event})
 
-
+# Step 6: Payment Success view
 from django.urls import reverse
 import time
 
@@ -752,11 +810,155 @@ def payment_success(request, event_id, participant_id):
     return redirect(reverse('registration:finalize_payment', kwargs={'event_id': event_id, 'participant_id': participant_id}))
 
 
+# Step 7: Payment Finalizing View
 import time
+import logging
+from django.shortcuts import get_object_or_404, render
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
 from registration.pdf_utils import generate_invoice
-from datetime import datetime
-from django.utils.timezone import make_aware
-from dateutil import parser
+
+logger = logging.getLogger(__name__)
+@login_required
+def finalize_payment(request, event_id, participant_id):
+    try:
+        # Retrieve PaymentStatus record
+        payment_status = get_object_or_404(PaymentStatus, participant_id=participant_id, event_id=event_id)
+
+        # Execute payment logic
+        token = get_bkash_token()
+        if not token:
+            messages.error(request, "Failed to retrieve token.")
+            return render(request, 'payment_message.html', {
+                'title': "Payment Failure",
+                'error_message': "Failed to retrieve token."
+            })
+
+        # Call bKash execute API
+        execute_response = execute_payment(token, payment_status.transaction_id)
+
+        # Debug point: Log the execute response
+        print(f"Execute Payment API Response: {execute_response}")
+
+        # Handle specific Execute API error cases
+        if execute_response:
+            status_code = execute_response.get('statusCode')
+            status_message = execute_response.get('statusMessage', 'Invalid payment state.')
+            
+            # Map known error cases
+            error_messages = {
+                "2001": "Duplicate transaction detected. Please try again.",
+                "3001": "Payment was cancelled by the user.",
+                "4001": "Wrong OTP provided. Please restart the payment.",
+                "5001": "Wrong PIN provided. Please restart the payment.",
+            }
+            
+            # Handle specific errors
+            if status_code in error_messages:
+                payment_status.status = 'failed'
+                payment_status.save()
+                return render(request, 'payment_message.html', {
+                    'title': 'Payment Failure',
+                    'error_message': error_messages[status_code]
+                })
+            
+            # Handle unknown status codes
+            elif status_code != "0000":
+                payment_status.status = 'failed'
+                payment_status.save()
+                return render(request, 'payment_message.html', {
+                    'title': 'Payment Failure',
+                    'error_message': status_message
+                })
+
+        # Handle Execute API Success
+        if execute_response and execute_response.get('statusCode') == '0000':
+            payment_status.status = 'completed'
+            payment_status.amount = execute_response.get('amount', payment_status.amount)
+            payment_status.merchant_invoice_number = execute_response.get('merchantInvoiceNumber', payment_status.merchant_invoice_number)
+            payment_status.transaction_id = execute_response.get('paymentID')
+            payment_status.trxID = execute_response.get('trxID')  # Use trxID from execute response
+            payment_status.save()
+
+            # Generate Invoice and Send Email
+            try:
+                invoice_path = generate_invoice(payment_status.participant, payment_status.event, payment_status)
+                send_invoice_email(payment_status.participant, payment_status.event, payment_status, invoice_path)
+            except Exception as e:
+                print(f"Invoice/Email Error: {e}")
+                messages.error(request, "Payment completed, but there was an issue generating the invoice or sending the email.")
+                return render(request, 'payment_message.html', {
+                    'title': 'Payment Completed with Issues',
+                    'error_message': 'Please contact support for your invoice.',
+                })
+
+            # Render success message
+            return render(request, 'finalize_payment.html', {
+                'message': "Payment successfully finalized.",
+                'payment_details': execute_response,
+            })
+
+        # Fallback: Handle incomplete Execute API response
+        payment_status.status = 'failed'
+        payment_status.save()
+        return render(request, 'payment_message.html', {
+            'title': 'Payment Failure',
+            'error_message': 'Payment finalization failed. Please contact support.',
+        })
+
+    except Exception as e:
+        print(f"Error in finalizing payment: {e}")
+        return render(request, 'payment_message.html', {
+            'title': 'Payment Failure',
+            'error_message': 'An unexpected error occurred during payment finalization.',
+        })
+
+# Step 8: Payment Failure
+@login_required
+def payment_failure(request, event_id, participant_id):
+    participant = get_object_or_404(Participant, id=participant_id)
+    event = get_object_or_404(Event, id=event_id)
+
+    # Update payment status to 'failed'
+    PaymentStatus.objects.filter(participant=participant, event=event).update(status='failed')
+
+    # Optional: Show a failure reason
+    failure_reason = request.GET.get('reason', "Payment failed. Please try again.")
+    messages.error(request, failure_reason)
+    return render(request, 'payment_message.html', {'event_id': event_id, 'participant_id': participant_id})
+
+# Invoice Generation Start ----------------------------------------------------------------#
+from django.core.mail import EmailMessage
+def send_invoice_email(participant, event, payment_status, invoice_path):
+    subject = f"Payment done and Invoice for {event.name}"
+    message = (
+        f"Dear {participant.name},\n\n"
+        f"Thank you for registering for {event.name}.\n"
+        f"Please find your invoice attached.\n\n"
+        "Best regards,\nConference Team"
+    )
+    recipient = participant.email
+
+    # Create Email
+    email = EmailMessage(subject, message, to=[recipient])
+    email.attach_file(invoice_path)
+    
+    try:
+        email.send()
+        payment_status.email_sent = True
+        payment_status.invoice = invoice_path
+        payment_status.save()
+        print(f"Email sent to {recipient}")
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
+
+#Test Codes ---------------------------------------------------------------------------------#
+# import time
+# from registration.pdf_utils import generate_invoice
+# from datetime import datetime
+# from django.utils.timezone import make_aware
+# from dateutil import parser
 # @login_required
 # def finalize_payment(request, event_id, participant_id):
 #     try:
@@ -854,202 +1056,406 @@ from dateutil import parser
 #         return render(request, 'payment_message.html', {'title': 'Payment Failure', 'error_message': 'An unexpected error occurred during finalization.'})
 
 
-from dateutil import parser
-from django.shortcuts import get_object_or_404, render
-from django.contrib.auth.decorators import login_required
-from django.contrib import messages
-import time
+# from dateutil import parser
+# from django.shortcuts import get_object_or_404, render
+# from django.contrib.auth.decorators import login_required
+# from django.contrib import messages
+# import time
 
-@login_required
-def finalize_payment(request, event_id, participant_id):
-    try:
-        # Retrieve PaymentStatus record
-        payment_status = get_object_or_404(PaymentStatus, participant_id=participant_id, event_id=event_id)
+# @login_required
+# def finalize_payment(request, event_id, participant_id):
+#     try:
+#         # Retrieve PaymentStatus record
+#         payment_status = get_object_or_404(PaymentStatus, participant_id=participant_id, event_id=event_id)
         
-        # Execute payment logic
-        token = get_bkash_token()
-        if not token:
-            messages.error(request, "Failed to retrieve token.")
-            return render(request, 'payment_message.html', {
-                'title': "Payment Failure", 
-                'error_message': "Failed to retrieve token."
-            })
+#         # Execute payment logic
+#         token = get_bkash_token()
+#         if not token:
+#             messages.error(request, "Failed to retrieve token.")
+#             return render(request, 'payment_message.html', {
+#                 'title': "Payment Failure", 
+#                 'error_message': "Failed to retrieve token."
+#             })
 
-        # Call bKash execute API
-        response = execute_payment(token, payment_status.transaction_id)
-        if response and response.get('statusCode') == '0000':
-            # Payment finalized successfully
-            payment_status.status = 'completed'
-            payment_status.amount = response.get('amount', payment_status.amount)
-            payment_status.merchant_invoice_number = response.get('merchantInvoiceNumber', payment_status.merchant_invoice_number)
-            payment_status.transaction_id = response.get('paymentID')
-            payment_status.save()
+#         # Call bKash execute API
+#         response = execute_payment(token, payment_status.transaction_id)
+#         if response and response.get('statusCode') == '0000':
+#             # Payment finalized successfully
+#             payment_status.status = 'completed'
+#             payment_status.amount = response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = response.get('merchantInvoiceNumber', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = response.get('paymentID')
+#             payment_status.save()
 
-            # Query payment status to get trxID
-            time.sleep(5)  # Wait for the payment status to be updated
-            query_response = payment_query(token, response.get('paymentID'))
+#             # Query payment status to get trxID
+#             time.sleep(5)  # Wait for the payment status to be updated
+#             query_response = payment_query(token, response.get('paymentID'))
 
-            if query_response and query_response.get('trxID'):
-                payment_status.trxID = query_response['trxID']
-                payment_status.save()
+#             if query_response and query_response.get('trxID'):
+#                 payment_status.trxID = query_response['trxID']
+#                 payment_status.save()
 
-                # Update participant status
-                participant = get_object_or_404(Participant, id=participant_id)
-                participant.payment_status = 'completed'
-                participant.save()
+#                 # Update participant status
+#                 participant = get_object_or_404(Participant, id=participant_id)
+#                 participant.payment_status = 'completed'
+#                 participant.save()
 
-                # Generate Invoice and Send Email
-                invoice_error = None
-                try:
-                    invoice_path = generate_invoice(participant, payment_status.event, payment_status)
-                    send_invoice_email(participant, payment_status.event, payment_status, invoice_path)
-                except Exception as e:
-                    invoice_error = str(e)
-                    print(f"Invoice/Email Error: {e}")
-                    payment_status.status = 'error'
-                    payment_status.save()
-                    return render(request, 'payment_message.html', {
-                        'title': 'Payment Successful with Issues',
-                        'error_message': 'Payment was successful, but there was an issue generating the invoice or sending the email. Please contact support.'
-                    })
+#                 # Generate Invoice and Send Email
+#                 invoice_error = None
+#                 try:
+#                     invoice_path = generate_invoice(participant, payment_status.event, payment_status)
+#                     send_invoice_email(participant, payment_status.event, payment_status, invoice_path)
+#                 except Exception as e:
+#                     invoice_error = str(e)
+#                     print(f"Invoice/Email Error: {e}")
+#                     payment_status.status = 'error'
+#                     payment_status.save()
+#                     return render(request, 'payment_message.html', {
+#                         'title': 'Payment Successful with Issues',
+#                         'error_message': 'Payment was successful, but there was an issue generating the invoice or sending the email. Please contact support.'
+#                     })
 
-                # Save bKash Data model as the final step
-                try:
-                    bkash_data = BkashData(
-                        payment_id=query_response['paymentID'],
-                        trx_id=query_response['trxID'],
-                        mode=query_response['mode'],
-                        payment_create_time=query_response.get('paymentCreateTime', ''),
-                        payment_execute_time=query_response.get('paymentExecuteTime', ''),
-                        amount=query_response['amount'],
-                        currency=query_response['currency'],
-                        intent=query_response['intent'],
-                        merchant_invoice=query_response['merchantInvoice'],
-                        transaction_status=query_response['transactionStatus'],
-                        service_fee=query_response['serviceFee'],
-                        verification_status=query_response['verificationStatus'],
-                        payer_reference=query_response['payerReference'],
-                        payer_type=query_response['payerType'],
-                        status_code=query_response['statusCode'],
-                        status_message=query_response['statusMessage']
-                    )
-                    bkash_data.save()
-                except Exception as e:
-                    print(f"Error saving bKash data: {e}")
-                    return render(request, 'payment_message.html', {
-                        'title': 'Payment Successful with Issues',
-                        'error_message': 'Payment was successful, but there was an issue saving the transaction data. Please contact support.'
-                    })
+#                 # Save bKash Data model as the final step
+#                 try:
+#                     bkash_data = BkashData(
+#                         payment_id=query_response['paymentID'],
+#                         trx_id=query_response['trxID'],
+#                         mode=query_response['mode'],
+#                         payment_create_time=query_response.get('paymentCreateTime', ''),
+#                         payment_execute_time=query_response.get('paymentExecuteTime', ''),
+#                         amount=query_response['amount'],
+#                         currency=query_response['currency'],
+#                         intent=query_response['intent'],
+#                         merchant_invoice=query_response['merchantInvoice'],
+#                         transaction_status=query_response['transactionStatus'],
+#                         service_fee=query_response['serviceFee'],
+#                         verification_status=query_response['verificationStatus'],
+#                         payer_reference=query_response['payerReference'],
+#                         payer_type=query_response['payerType'],
+#                         status_code=query_response['statusCode'],
+#                         status_message=query_response['statusMessage']
+#                     )
+#                     bkash_data.save()
+#                 except Exception as e:
+#                     print(f"Error saving bKash data: {e}")
+#                     return render(request, 'payment_message.html', {
+#                         'title': 'Payment Successful with Issues',
+#                         'error_message': 'Payment was successful, but there was an issue saving the transaction data. Please contact support.'
+#                     })
 
-                # Render success message
-                return render(request, 'finalize_payment.html', {
-                    'message': "Payment successfully finalized.",
-                    'payment_details': query_response,
-                })
+#                 # Render success message
+#                 return render(request, 'finalize_payment.html', {
+#                     'message': "Payment successfully finalized.",
+#                     'payment_details': query_response,
+#                 })
 
-            else:
-                # If trxID is not available, show failure message
-                payment_status.status = 'failed'
-                payment_status.save()
-                return render(request, 'payment_message.html', {
-                    'title': 'Payment Failure',
-                    'error_message': 'Transaction ID not found. Payment could not be completed. Please attempt again or contact the organizers.'
-                })
+#             else:
+#                 # If trxID is not available, show failure message
+#                 payment_status.status = 'failed'
+#                 payment_status.save()
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Failure',
+#                     'error_message': 'Transaction ID not found. Payment could not be completed. Please attempt again or contact the organizers.'
+#                 })
 
-        else:
-            # Payment finalization failed
-            payment_status.status = 'failed'
-            payment_status.save()
-            error_message = response.get('statusMessage', 'Payment finalization failed. Try again or contact the organizers.')
-            return render(request, 'payment_message.html', {
-                'title': 'Payment Failure', 
-                'error_message': error_message
-            })
+#         else:
+#             # Payment finalization failed
+#             payment_status.status = 'failed'
+#             payment_status.save()
+#             error_message = response.get('statusMessage', 'Payment finalization failed. Try again or contact the organizers.')
+#             return render(request, 'payment_message.html', {
+#                 'title': 'Payment Failure', 
+#                 'error_message': error_message
+#             })
 
-    except Exception as e:
-        print(f"Error in finalizing payment: {e}")
-        return render(request, 'payment_message.html', {
-            'title': 'Payment Failure',
-            'error_message': 'An unexpected error occurred during finalization.'
-        })
+#     except Exception as e:
+#         print(f"Error in finalizing payment: {e}")
+#         return render(request, 'payment_message.html', {
+#             'title': 'Payment Failure',
+#             'error_message': 'An unexpected error occurred during finalization.'
+#         })
 
+# @login_required
+# def finalize_payment(request, event_id, participant_id):
+#     try:
+#         # Retrieve PaymentStatus record
+#         payment_status = get_object_or_404(PaymentStatus, participant_id=participant_id, event_id=event_id)
 
-import requests
+#         # Execute payment logic
+#         token = get_bkash_token()
+#         if not token:
+#             messages.error(request, "Failed to retrieve token.")
+#             return render(request, 'payment_message.html', {
+#                 'title': "Payment Failure",
+#                 'error_message': "Failed to retrieve token."
+#             })
 
-def payment_query(token, payment_id):
+#         # Call bKash execute API
+#         execute_response = execute_payment(token, payment_status.transaction_id)
 
-    url = f"{BKASH_PRODUCTION_URL}/tokenized/checkout/payment/status"
-    payload = {"paymentID": payment_id}
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}",
-        "X-APP-Key": BKASH_APP_KEY  # Ensure APP Key is properly set
-    }
+#         # Handle Execute API Response
+#         if execute_response and execute_response.get('statusCode') == '0000':
+#             # Extract data from execute response
+#             payment_status.status = 'completed'
+#             payment_status.amount = execute_response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = execute_response.get('merchantInvoiceNumber', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = execute_response.get('paymentID')
+#             payment_status.trxID = execute_response.get('trxID')  # Use trxID from execute response
+#             payment_status.save()
+#             return render(request, 'finalize_payment.html', {
+#                 'message': "Payment successfully finalized.",
+#                 'payment_details': execute_response,
+#             })
 
-    try:
-        print(f"Querying payment status for Payment ID: {payment_id}")
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()  # Raise an error for HTTP codes >= 400
-        
-        # Debugging response
-        print(f"Payment query successful: {response.status_code}")
-        print(f"Response content: {response.json()}")
-        return response.json()
-    
-    except requests.exceptions.HTTPError as http_err:
-        print(f"HTTP error occurred: {http_err}")
-        if http_err.response:
-            print(f"HTTP response error: {http_err.response.json()}")
-        return None
-    except requests.exceptions.RequestException as req_err:
-        print(f"Request error occurred: {req_err}")
-        return None
+#         # Fallback: Call Query Payment API if execute response is missing or incomplete
+#         print("Fallback to Query Payment API...")
+#         query_response = payment_query(token, payment_status.transaction_id)
 
+#         # Handle Query API Response
+#         if query_response and query_response.get('statusCode') == '0000':
+#             payment_status.status = 'completed'
+#             payment_status.amount = query_response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = query_response.get('merchantInvoice', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = query_response.get('paymentID')
+#             payment_status.trxID = query_response.get('trxID')  # trxID from query response
+#             payment_status.save()
+#             return render(request, 'finalize_payment.html', {
+#                 'message': "Payment successfully finalized.",
+#                 'payment_details': query_response,
+#             })
 
-# Step 6: Payment Failure
-@login_required
-def payment_failure(request, event_id, participant_id):
-    participant = get_object_or_404(Participant, id=participant_id)
-    event = get_object_or_404(Event, id=event_id)
+#         # Handle Query API Failure
+#         else:
+#             payment_status.status = 'failed'
+#             payment_status.save()
+#             error_message = query_response.get('statusMessage', 'Payment finalization failed. Please try again or contact support.')
+#             return render(request, 'payment_message.html', {
+#                 'title': 'Payment Failure',
+#                 'error_message': error_message,
+#             })
 
-    # Update payment status to 'failed'
-    PaymentStatus.objects.filter(participant=participant, event=event).update(status='failed')
-
-    # Optional: Show a failure reason
-    failure_reason = request.GET.get('reason', "Payment failed. Please try again.")
-    messages.error(request, failure_reason)
-    return render(request, 'payment_message.html', {'event_id': event_id, 'participant_id': participant_id})
-
-# Invoice Generation Start ----------------------------------------------------------------#
-from django.core.mail import EmailMessage
-
-from django.core.mail import EmailMessage
-
-def send_invoice_email(participant, event, payment_status, invoice_path):
-    subject = f"Payment done and Invoice for {event.name}"
-    message = (
-        f"Dear {participant.name},\n\n"
-        f"Thank you for registering for {event.name}.\n"
-        f"Please find your invoice attached.\n\n"
-        "Best regards,\nConference Team"
-    )
-    recipient = participant.email
-
-    # Create Email
-    email = EmailMessage(subject, message, to=[recipient])
-    email.attach_file(invoice_path)
-    
-    try:
-        email.send()
-        payment_status.email_sent = True
-        payment_status.invoice = invoice_path
-        payment_status.save()
-        print(f"Email sent to {recipient}")
-    except Exception as e:
-        print(f"Error sending email: {e}")
+#     except Exception as e:
+#         print(f"Error in finalizing payment: {e}")
+#         return render(request, 'payment_message.html', {
+#             'title': 'Payment Failure',
+#             'error_message': 'An unexpected error occurred during payment finalization.',
+#         })
 
 
 
+
+# @login_required
+# def finalize_payment(request, event_id, participant_id):
+#     try:
+#         # Retrieve PaymentStatus record
+#         payment_status = get_object_or_404(PaymentStatus, participant_id=participant_id, event_id=event_id)
+
+#         # Execute payment logic
+#         token = get_bkash_token()
+#         if not token:
+#             messages.error(request, "Failed to retrieve token.")
+#             return render(request, 'payment_message.html', {
+#                 'title': "Payment Failure",
+#                 'error_message': "Failed to retrieve token."
+#             })
+
+#         # Call bKash execute API
+#         execute_response = execute_payment(token, payment_status.transaction_id)
+
+#         # Debug point: Log the execute response
+#         logger.debug(f"Execute Payment API Response: {execute_response}")
+#         print(f"Execute Payment API Response: {execute_response}")
+
+#         # Handle Execute API Response
+#         if execute_response and execute_response.get('statusCode') == '0000':
+#             # Payment finalized successfully
+#             payment_status.status = 'completed'
+#             payment_status.amount = execute_response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = execute_response.get('merchantInvoiceNumber', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = execute_response.get('paymentID')
+#             payment_status.trxID = execute_response.get('trxID')  # Use trxID from execute response
+#             payment_status.save()
+
+#             # Generate Invoice and Send Email
+#             try:
+#                 invoice_path = generate_invoice(payment_status.participant, payment_status.event, payment_status)
+#                 send_invoice_email(payment_status.participant, payment_status.event, payment_status, invoice_path)
+#             except Exception as e:
+#                 logger.error(f"Invoice/Email Error: {e}")
+#                 messages.error(request, "Payment completed, but there was an issue generating the invoice or sending the email.")
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Completed with Issues',
+#                     'error_message': 'Please contact support for your invoice.',
+#                 })
+
+#             # Render success message
+#             return render(request, 'finalize_payment.html', {
+#                 'message': "Payment successfully finalized.",
+#                 'payment_details': execute_response,
+#             })
+
+#         # Fallback: Call Query Payment API after 2 seconds if execute API fails or incomplete
+#         logger.info("Fallback to Query Payment API after execute failure or incomplete response...")
+#         time.sleep(2)  # Wait for 2 seconds before querying payment
+#         query_response = payment_query(token, payment_status.transaction_id)
+
+#         # Handle Query API Response
+#         if query_response and query_response.get('statusCode') == '0000':
+#             payment_status.status = 'completed'
+#             payment_status.amount = query_response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = query_response.get('merchantInvoice', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = query_response.get('paymentID')
+#             payment_status.trxID = query_response.get('trxID')  # trxID from query response
+#             payment_status.save()
+
+#             # Render success message
+#             return render(request, 'finalize_payment.html', {
+#                 'message': "Payment successfully finalized via Query API.",
+#                 'payment_details': query_response,
+#             })
+
+#         # Handle Query API Failure
+#         else:
+#             payment_status.status = 'failed'
+#             payment_status.save()
+#             error_message = query_response.get('statusMessage', 'Payment finalization failed. Please try again or contact support.')
+#             return render(request, 'payment_message.html', {
+#                 'title': 'Payment Failure',
+#                 'error_message': error_message,
+#             })
+
+#     except Exception as e:
+#         logger.error(f"Error in finalizing payment: {e}")
+#         return render(request, 'payment_message.html', {
+#             'title': 'Payment Failure',
+#             'error_message': 'An unexpected error occurred during payment finalization.',
+ 
+#         })
+
+
+
+
+
+
+# # @login_required
+# # def finalize_payment(request, event_id, participant_id):
+#     try:
+#         # Retrieve PaymentStatus record
+#         payment_status = get_object_or_404(PaymentStatus, participant_id=participant_id, event_id=event_id)
+
+#         # Execute payment logic
+#         token = get_bkash_token()
+#         if not token:
+#             messages.error(request, "Failed to retrieve token.")
+#             return render(request, 'payment_message.html', {
+#                 'title': "Payment Failure",
+#                 'error_message': "Failed to retrieve token."
+#             })
+
+#         # Call bKash execute API
+#         execute_response = execute_payment(token, payment_status.transaction_id)
+
+#         # Debug point: Log the execute response
+#         print(f"Execute Payment API Response: {execute_response}")
+
+#         # Handle specific Execute API error cases
+#         if execute_response:
+#             status_code = execute_response.get('statusCode')
+#             status_message = execute_response.get('statusMessage', 'An error occurred.')
+#             if status_code == "2001":  # Duplicate transaction
+#                 payment_status.status = 'failed'
+#                 payment_status.save()
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Failure',
+#                     'error_message': "Duplicate transaction detected. Please try again."
+#                 })
+#             elif status_code == "3001":  # Cancelled by user
+#                 payment_status.status = 'failed'
+#                 payment_status.save()
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Cancelled',
+#                     'error_message': "You have cancelled the payment."
+#                 })
+#             elif status_code == "4001":  # Wrong OTP
+#                 payment_status.status = 'failed'
+#                 payment_status.save()
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Failure',
+#                     'error_message': "Wrong OTP provided. Please restart the payment."
+#                 })
+#             elif status_code == "5001":  # Wrong PIN
+#                 payment_status.status = 'failed'
+#                 payment_status.save()
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Failure',
+#                     'error_message': "Wrong PIN provided. Please restart the payment."
+#                 })
+#             elif status_code != "0000":  # Any other failure
+#                 payment_status.status = 'failed'
+#                 payment_status.save()
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Failure',
+#                     'error_message': status_message
+#                 })
+
+#         # Handle Execute API Success
+#         if execute_response and execute_response.get('statusCode') == '0000':
+#             payment_status.status = 'completed'
+#             payment_status.amount = execute_response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = execute_response.get('merchantInvoiceNumber', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = execute_response.get('paymentID')
+#             payment_status.trxID = execute_response.get('trxID')  # Use trxID from execute response
+#             payment_status.save()
+
+#             # Generate Invoice and Send Email
+#             try:
+#                 invoice_path = generate_invoice(payment_status.participant, payment_status.event, payment_status)
+#                 send_invoice_email(payment_status.participant, payment_status.event, payment_status, invoice_path)
+#             except Exception as e:
+#                 print(f"Invoice/Email Error: {e}")
+#                 messages.error(request, "Payment completed, but there was an issue generating the invoice or sending the email.")
+#                 return render(request, 'payment_message.html', {
+#                     'title': 'Payment Completed with Issues',
+#                     'error_message': 'Please contact support for your invoice.',
+#                 })
+
+#             # Render success message
+#             return render(request, 'finalize_payment.html', {
+#                 'message': "Payment successfully finalized.",
+#                 'payment_details': execute_response,
+#             })
+
+#         # Fallback: Call Query Payment API if execute API fails
+#         time.sleep(2)  # Wait for 2 seconds before querying payment
+#         query_response = payment_query(token, payment_status.transaction_id)
+#         if query_response and query_response.get('statusCode') == '0000':
+#             payment_status.status = 'completed'
+#             payment_status.amount = query_response.get('amount', payment_status.amount)
+#             payment_status.merchant_invoice_number = query_response.get('merchantInvoice', payment_status.merchant_invoice_number)
+#             payment_status.transaction_id = query_response.get('paymentID')
+#             payment_status.trxID = query_response.get('trxID')  # trxID from query response
+#             payment_status.save()
+
+#             return render(request, 'finalize_payment.html', {
+#                 'message': "Payment successfully finalized via Query API.",
+#                 'payment_details': query_response,
+#             })
+
+#         # Handle Query API Failure
+#         else:
+#             payment_status.status = 'failed'
+#             payment_status.save()
+#             return render(request, 'payment_message.html', {
+#                 'title': 'Payment Failure',
+#                 'error_message': 'Payment finalization failed. Please try again or contact support.',
+#             })
+
+#     except Exception as e:
+#         print(f"Error in finalizing payment: {e}")
+#         return render(request, 'payment_message.html', {
+#             'title': 'Payment Failure',
+#             'error_message': 'An unexpected error occurred during payment finalization.',
+#         })
 
 
 

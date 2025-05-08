@@ -54,10 +54,44 @@ class EventAdmin(admin.ModelAdmin):
     list_filter = ('year', 'event_status')
 admin.site.register(Event, EventAdmin)
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
 class FeatureSpeakerAdmin(admin.ModelAdmin):
     list_display = ('name', 'speciality', 'institution', 'event')
     list_filter = ('event',)
 admin.site.register(FeatureSpeaker, FeatureSpeakerAdmin)
+
+from django.urls import reverse
+def send_consolidated_email(participant, password, include_password):
+    event = participant.event
+    subject = f'Your Registration for {event.name} {event.year} is Approved!'
+       # Path-based payment URL
+    payment_url = reverse('payment', kwargs={
+        'event_id': event.id,
+        'participant_id': participant.id
+    })
+    full_payment_url = f'https://event.bsbcs.org{payment_url}'
+    
+    try:
+        context = {
+            'participant': participant,
+            'event': event,
+            'payment_url': full_payment_url,
+        }
+        if include_password:
+            context['password'] = password
+
+        html_content = render_to_string('consolidated_email.html', context)
+        text_content = strip_tags(html_content)
+        from_email = os.getenv("EMAIL_HOST_USER")
+        recipient_list = [participant.email]
+
+        email = EmailMultiAlternatives(subject, text_content, from_email, recipient_list)
+        email.attach_alternative(html_content, "text/html")
+        email.send()
+    except Exception as e:
+        print(f"Error sending consolidated email: {e}")
 
 # Event Specific Participants admin view START------------------------------------------------------------------------------#
 from django.contrib.auth.models import User
@@ -83,30 +117,6 @@ def approve_participants(modeladmin, request, queryset):
             participant.denied = False
         participant.save()
         send_consolidated_email(participant, password, include_password)
-
-def send_consolidated_email(participant, password, include_password):
-    event = participant.event
-    subject = f'Your Registration for {event.name} {event.year} is Approved!'
-    payment_url = f'http://http://127.0.0.1:8000/payment?event_id={event.id}&participant_id={participant.id}'
-    try:
-        context = {
-            'participant': participant,
-            'event': event,
-            'payment_url': payment_url
-        }
-        if include_password:
-            context['password'] = password
-
-        html_content = render_to_string('consolidated_email.html', context)
-        text_content = strip_tags(html_content)
-        from_email = 'no-reply@example.com'
-        recipient_list = [participant.email]
-
-        email = EmailMultiAlternatives(subject, text_content, from_email, recipient_list)
-        email.attach_alternative(html_content, "text/html")
-        email.send()
-    except Exception as e:
-        print(f"Error sending consolidated email: {e}")
 
 
 def deny_participants(modeladmin, request, queryset):
@@ -215,7 +225,7 @@ def send_approval_email(abstract, approval_type):
     }
     html_content = render_to_string('abstract_approval_email.html', context)
     text_content = strip_tags(html_content)
-    from_email = 'info.bsbcs@gmail.com'  # Replace with your sender email
+    from_email = os.getenv("EMAIL_HOST_USER")
     recipient_list = [abstract.user.email]
 
     # Create and send the email
@@ -258,7 +268,7 @@ class ProgramScheduleAdmin(admin.ModelAdmin):
             email = EmailMultiAlternatives(
                 subject=subject,
                 body=text_content,
-                from_email='info.bsbcs@gmail.com',
+                from_email= os.getenv("EMAIL_HOST_USER"),
                 to=participants
             )
             email.attach_alternative(html_content, "text/html")
